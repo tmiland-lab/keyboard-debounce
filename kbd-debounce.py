@@ -11,7 +11,13 @@ Unlike simple filters, this one:
 
 Usage:
     kbd-debounce.py --list
-    kbd-debounce.py --name "Logitech G915 X LS" [--threshold 75]
+    kbd-debounce.py --name "Logitech G915 X LS" [--threshold 75] [--release-gap 30]
+
+Two rules are applied to same-key key-down events:
+  * repeat rule:  suppress a press arriving < --threshold ms after the previous press
+  * release rule: suppress a press arriving < --release-gap ms after the previous release
+The release rule catches "release-bounce" blips that arrive long after the
+previous press but immediately after its release (observed signature: 22 ms).
 
 Approach adapted from markdborden/kb-debounce (MIT).
 """
@@ -24,7 +30,7 @@ import time
 import evdev
 from evdev import UInput, ecodes
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 STOP = False
 MIN_KEYS = 100  # a full keyboard map; filters out media-key subdevices
 
@@ -86,29 +92,41 @@ def find_device(name_fragment):
     return best
 
 
-def run(dev, threshold_ms):
-    log(f"engaging: {dev.path} {dev.name!r} threshold={threshold_ms}ms")
+def run(dev, threshold_ms, release_ms):
+    log(f"engaging: {dev.path} {dev.name!r} threshold={threshold_ms}ms release-gap={release_ms}ms")
     ui = UInput.from_device(dev, name=f"{dev.name} (debounced)")
     dev.grab()
     sel = selectors.DefaultSelector()
     sel.register(dev.fd, selectors.EVENT_READ)
     last_down = {}
+    last_up = {}
     threshold = threshold_ms / 1000.0
+    release_gap = release_ms / 1000.0
     try:
         while not STOP:
             for _ in sel.select(timeout=1.0):
                 for event in dev.read():
-                    if event.type == ecodes.EV_KEY and event.value == 1:
+                    if event.type == ecodes.EV_KEY:
                         now = time.monotonic()
-                        prev = last_down.get(event.code)
-                        if prev is not None and now - prev < threshold:
+                        if event.value == 1:  # key down
                             keyname = ecodes.KEY.get(event.code, event.code)
-                            log(
-                                f"suppressed bounce: key {keyname} "
-                                f"{(now - prev) * 1000:.1f}ms after previous press"
-                            )
-                            continue
-                        last_down[event.code] = now
+                            prev_down = last_down.get(event.code)
+                            prev_up = last_up.get(event.code)
+                            if prev_down is not None and now - prev_down < threshold:
+                                log(
+                                    f"suppressed bounce (repeat): key {keyname} "
+                                    f"{(now - prev_down) * 1000:.1f}ms after previous press"
+                                )
+                                continue
+                            if prev_up is not None and now - prev_up < release_gap:
+                                log(
+                                    f"suppressed bounce (release): key {keyname} "
+                                    f"{(now - prev_up) * 1000:.1f}ms after release"
+                                )
+                                continue
+                            last_down[event.code] = now
+                        elif event.value == 0:  # key up
+                            last_up[event.code] = now
                     ui.write_event(event)
                     ui.syn()
     except OSError as exc:
@@ -127,7 +145,8 @@ def run(dev, threshold_ms):
 def main():
     ap = argparse.ArgumentParser(description="Debounce filter for chattering keyboards")
     ap.add_argument("--name", help="substring of the keyboard device name")
-    ap.add_argument("--threshold", type=int, default=75, help="debounce threshold in ms (default 75)")
+    ap.add_argument("--threshold", type=int, default=75, help="repeat rule: suppress presses this close after the previous press, in ms (default 75)")
+    ap.add_argument("--release-gap", type=int, default=30, help="release rule: suppress presses this close after the previous release, in ms (default 30)")
     ap.add_argument("--list", action="store_true", help="list candidate keyboard devices and exit")
     ap.add_argument("--version", action="version", version=f"kbd-debounce {VERSION}")
     args = ap.parse_args()
@@ -151,7 +170,7 @@ def main():
         if dev is None:
             time.sleep(2)
             continue
-        run(dev, args.threshold)
+        run(dev, args.threshold, args.release_gap)
         if not STOP:
             time.sleep(2)
     log("stopped")

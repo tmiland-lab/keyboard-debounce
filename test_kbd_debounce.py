@@ -66,7 +66,7 @@ def collect(dev, duration):
 
 # 1. start filter while device is absent
 proc = subprocess.Popen(
-    ["python3", FILTER, "--name", "TestChatter", "--threshold", "75"],
+    ["python3", FILTER, "--name", "TestChatter", "--threshold", "75", "--release-gap", "30"],
     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
 )
 time.sleep(1.0)
@@ -96,10 +96,14 @@ ui_sub.close()
 time.sleep(1.0)
 
 # 3. send test sequence on the fake keyboard (raw):
-#    t=0.00 down#1 (200ms hold)            -> forwarded
-#    t=0.25 down#2 (20ms blip)             -> forwarded (gap 250ms)
-#    t=0.28 down#3 (200ms hold)            -> SUPPRESSED (30ms after down#2)
-#    t=0.55 down#4 (200ms hold)            -> forwarded
+#    t=0.00 down#1 (200ms hold)  -> forwarded
+#    t=0.25 down#2 (20ms blip)   -> forwarded (250ms since press#1, 50ms since release#1)
+#    t=0.28 down#3 (200ms hold)  -> SUPPRESSED (10ms after release#2)
+#    t=0.55 down#4 (200ms hold)  -> forwarded
+#    t=0.85 down#5 (180ms hold)  -> forwarded
+#    t=1.05 down#6 (20ms blip)   -> SUPPRESSED (22ms after release#5; 200ms since
+#                                   press#5, so ONLY the release rule catches it)
+#    t=1.35 down#7 (180ms hold)  -> forwarded
 def press(delay_before, hold):
     time.sleep(delay_before)
     ui.write(ecodes.EV_KEY, ecodes.KEY_A, 1)
@@ -112,12 +116,15 @@ press(0.00, 0.20)
 press(0.05, 0.02)
 press(0.01, 0.20)
 press(0.07, 0.20)
+press(0.10, 0.18)
+press(0.022, 0.02)
+press(0.28, 0.18)
 
-events = collect(clone, 2.0)
+events = collect(clone, 2.5)
 downs = [e for e in events if e.type == ecodes.EV_KEY and e.code == ecodes.KEY_A and e.value == 1]
 ups = [e for e in events if e.type == ecodes.EV_KEY and e.code == ecodes.KEY_A and e.value == 0]
-print(f"raw sent: 4 downs, 4 ups | clone saw: {len(downs)} downs, {len(ups)} ups")
-check("chatter down suppressed (3 of 4 downs forwarded)", len(downs) == 3, f"got {len(downs)}")
+print(f"raw sent: 7 downs, 7 ups | clone saw: {len(downs)} downs, {len(ups)} ups")
+check("chatter suppressed (5 of 7 downs forwarded)", len(downs) == 5, f"got {len(downs)}")
 
 # 4. device disappears -> filter should disengage; then reappear -> re-engage
 ui.close()

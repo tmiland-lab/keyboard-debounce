@@ -19,7 +19,9 @@ Two key-down events 44 ms apart from one physical press = 22 taps per second. Ph
 
 1. Finds your keyboard's evdev device (matched by a substring of its name).
 2. Grabs it exclusively and creates a virtual clone via `uinput`.
-3. Forwards every event to the clone — except same-key key-down events arriving within the threshold (default **75 ms**) of the previous press, which are dropped as bounces.
+3. Forwards every event to the clone — except same-key key-down events caught by two bounce rules:
+   - **repeat rule** — a press arriving within `--threshold` ms (default **75**) of the previous *press*;
+   - **release rule** — a press arriving within `--release-gap` ms (default **30**) of the previous *release*. This catches "release-bounce" blips that arrive long after the previous press but immediately after its release (observed signature on real hardware: exactly 22 ms, while legitimate fast typing never went below 39 ms).
 4. Waits for the keyboard to appear and **re-attaches automatically** after disconnects / USB re-enumerations.
 
 Normal typing, held keys and key repeats are unaffected: deliberate double-taps are ≥100–150 ms apart, well above the default threshold.
@@ -54,11 +56,10 @@ suppressed bounce: key KEY_P 44.0ms after previous press
 
 ## Tuning
 
-| Threshold | Use case |
-|---|---|
-| 50 ms | mild chatter, fast-paced gaming |
-| **75 ms** | default — most worn switches |
-| 100 ms | severe chatter (may start eating very fast deliberate double-taps) |
+| Option | Default | Use case |
+|---|---|---|
+| `--threshold` | 75 ms | repeat rule — mild chatter, fast-paced gaming |
+| `--release-gap` | 30 ms | release rule — release-bounce blips; raise toward 35–40 only if your fastest legitimate same-key retaps exceed 40 ms |
 
 Edit `/etc/systemd/system/kbd-debounce.service`, then:
 
@@ -68,7 +69,8 @@ sudo systemctl daemon-reload && sudo systemctl restart kbd-debounce
 
 ## Limitations
 
-- Only **fast** bounces are filtered. Slow release-bounce artifacts (e.g. 200–450 ms after a press) are indistinguishable from deliberate fast double-presses and pass through.
+- Bounce artifacts arriving **more than 30 ms after a release** (or >75 ms after a press) are indistinguishable from deliberate fast retaps and pass through. On the hardware this was built for, every observed artifact fell well inside those windows; if yours doesn't, raise the thresholds carefully — too high and fast double letters get eaten.
+- When the blip comes *first* and the real press second, the filter keeps the short blip as the registered press (text is correct; a long hold on that press is not preserved).
 - While engaged, the physical device is grabbed: software that reads `/dev/input/eventN` directly must use the `(debounced)` clone instead.
 - This is a **band-aid, not a repair**. For a genuinely worn switch, cleaning (compressed air / 99% isopropyl alcohol) or a warranty replacement is the real fix.
 
